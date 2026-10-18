@@ -1,173 +1,184 @@
-// importing the required library 
+/**
+ * Motion Glasses - Assistive Navigation Firmware for Arduino
+ * Author: Ahmad Serieh <ahmadserieh.official@gmail.com>
+ * License: MIT
+ *
+ * Senses directional obstacles and ground topography using 3 ultrasonic sensors
+ * and an MPU-6050 accelerometer/gyroscope, communicating directional feedback
+ * through dual haptic vibration motors.
+ */
+
 #include <Wire.h>
 #include <MPU6050.h>
 
-// Define threshold for clarity in(cm)
+// Distance detection threshold in centimeters
 #define DISTANCE_THRESHOLD 100
 
-//The number of cycls allowed
+// Maximum consecutive cycles allowed at identical distance before auto-muting vibration
 #define CYCLE_LIMIT 46
 
-//Storing the previous values for the distance 
-double preDF = 0;
-double preDR = 0;
-double preDL = 0;
+// Maximum pulse wait time in microseconds (~5 meters range)
+#define ULTRASONIC_TIMEOUT_US 30000
 
-//the ultra-sonic sensor signal pins
-const int SL_TRIG = 5;
-const int SR_TRIG = 6;
-const int SF_TRIG = 9;
+// Ultrasonic sensor pins (using 3-pin mode where TRIG and ECHO share the same pin)
+const int SL_TRIG = 5;  // Left ultrasonic sensor pin
+const int SR_TRIG = 6;  // Right ultrasonic sensor pin
+const int SF_TRIG = 9;  // Front ultrasonic sensor pin
 
-//the vibrators pins
-const int VL_PIN = 2;
-const int VR_PIN = 3;
+// Vibration motor driver pins
+const int VL_PIN = 2;   // Left vibration motor
+const int VR_PIN = 3;   // Right vibration motor
 
-// the slide switches signal pins.
-const int strPin = 4;
-const int noCyPin = 13;
+// Slide switch inputs
+const int strPin = 4;   // Straight-mode override slide switch
+const int noCyPin = 13; // Cycle-limit disable slide switch
 
-//the surface level distance for the user.
-double level;
+// Ground surface baseline distance in centimeters
+double level = 0.0;
 
-//The angle which under it switchs to downmode
-int downAngle = 30;
+// Head pitch angle threshold (degrees) below which down-mode activates
+const int downAngle = 30;
 
-//number of cycles for all sensors
+// Consecutive identical reading cycle counters
 int cycleF = 0;
 int cycleR = 0;
 int cycleL = 0;
 
-//create object of the MPU6050 library .
+// Previous distance readings
+double preDF = 0.0;
+double preDR = 0.0;
+double preDL = 0.0;
+
+// MPU6050 sensor instance
 MPU6050 mpu;
 
-//initialize the program.
+// Function prototypes
+long readUltrasonicDistance(int triggerPin, int echoPin);
+void straightMode(double df, double dr, double dl);
+void downMode(double df);
+void setLevel();
+void updateCycleCount(double df, double dr, double dl);
+
 void setup()
 {
-//start the communication with the port  (9600)
   Serial.begin(9600);
 
-//defining the pinMode for the vibrator pins.
+  // Configure vibration motor pins
   pinMode(VL_PIN, OUTPUT);
   pinMode(VR_PIN, OUTPUT);
+  digitalWrite(VL_PIN, LOW);
+  digitalWrite(VR_PIN, LOW);
 
-//defining the pinMode for the slide switches signal pins.
+  // Configure switch pins
   pinMode(noCyPin, INPUT);
   pinMode(strPin, INPUT);
 
-//begin communications with the MPU6050 chip
+  // Initialize I2C communication and MPU6050
   Wire.begin();
   mpu.begin();
-
-//calculating the offset for the MPU6050 chip.
   mpu.calcOffsets(true, true);
 
-//making a one second delay
+  // Stabilization delay
   delay(1000);
 
-//calling the function set level to assign the surface distance value for the level variable.
+  // Calibrate baseline ground surface distance
   setLevel();
 }
 
-//continuously executing the following code block
 void loop()
 {
-//extracting the raw accelerometer victor.
+  // Read normalized acceleration and calculate pitch angle
   Vector normAccel = mpu.readNormalizeAccel();
-  // Calculate pitch angle using accelerometer data
-  float pitch = -1 * asin(normAccel.XAxis) * 180 / PI;
-//Printing the pitch angle
-  Serial.print("Pitch angle ");
-  Serial.print(pitch);
+  float pitch = -1.0 * asin(normAccel.XAxis) * 180.0 / PI;
 
-//collecting the ultra-sonic distance for each sensor in (cm).
+  Serial.print(F("Pitch angle: "));
+  Serial.println(pitch);
+
+  // Measure distances from all three ultrasonic sensors
   double df = readUltrasonicDistance(SF_TRIG, SF_TRIG);
   double dr = readUltrasonicDistance(SR_TRIG, SR_TRIG);
   double dl = readUltrasonicDistance(SL_TRIG, SL_TRIG);
-//Printing the Ultrasonic Distances for all sensors
-  Serial.print("The Ultrasonic Distances for all sensors ");
+
+  Serial.print(F("Ultrasonic Distances (Front Right Left): "));
   Serial.print(df);
-  Serial.print(" ");
+  Serial.print(F(" "));
   Serial.print(dr);
-  Serial.print(" ");
+  Serial.print(F(" "));
   Serial.println(dl);
 
-//checking if there is an error or not in the ultra-sonic sensors
-  if ((df == 0 || dr == 0 || dl == 0))
+  // Check for sensor fault or inactive reading (0 cm indicates timeout / sleep)
+  if (df == 0 || dr == 0 || dl == 0)
   {
-//printing a Sleep mode message.
-    Serial.println("Sleep Mode is Active");
+    Serial.println(F("Sleep Mode is Active"));
+    digitalWrite(VR_PIN, LOW);
+    digitalWrite(VL_PIN, LOW);
+  }
+  else
+  {
+    // Mode selection: Straight navigation vs. ground tracking
+    if (pitch > downAngle || digitalRead(strPin) == HIGH)
+    {
+      straightMode(df, dr, dl);
+    }
+    else
+    {
+      downMode(df);
+    }
 
-  }else{
-// checking if the pitch is above the downAngle degree or the straight-mode slide switch is on.
-      if (pitch > downAngle || digitalRead(strPin) == 1)
-      {
-//calling the straight-mode function.
-        straightMode(df, dr, dl);
-      }
-      else
-      {
-//calling the down-mode fumction.
-        downMode(df);
-      }
-
-    
-//check if no Cycle Mode is on or off to set the cycles values
-    if(digitalRead(noCyPin) == 0){
-    updateCycleCount(df, dr, dl);
-    }else{
+    // Update cycle counters unless cycle limiting is disabled
+    if (digitalRead(noCyPin) == LOW)
+    {
+      updateCycleCount(df, dr, dl);
+    }
+    else
+    {
       cycleF = 0;
       cycleR = 0;
       cycleL = 0;
     }
-//prints the cycles
+
+    Serial.print(F("Cycle Counts: "));
     Serial.print(cycleF);
-    Serial.print(" ");
+    Serial.print(F(" "));
     Serial.print(cycleR);
-    Serial.print(" ");
+    Serial.print(F(" "));
     Serial.println(cycleL);
-    
-//assigning the current values as the previous values.
+
     preDF = df;
     preDR = dr;
     preDL = dl;
-
-//prints the previous values.
-    Serial.print(preDF);
-    Serial.print(" ");
-    Serial.print(preDR);
-    Serial.print(" ");
-    Serial.println(preDL);
   }
-//delay (100ms)
+
   delay(100);
 }
 
-// the read ultra sonic function
+/**
+ * Trigger an ultrasonic pulse and measure return echo distance in cm.
+ * Operates in 3-pin mode (combined trigger and echo pin).
+ */
 long readUltrasonicDistance(int triggerPin, int echoPin)
 {
-  pinMode(triggerPin, OUTPUT); // Clear the trigger
+  pinMode(triggerPin, OUTPUT);
   digitalWrite(triggerPin, LOW);
   delayMicroseconds(2);
 
-  // Sets the trigger pin to HIGH state for 10 microseconds
   digitalWrite(triggerPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(triggerPin, LOW);
-  pinMode(echoPin, INPUT);
 
-  // Reads the echo pin, and returns the distance in cm
-  return pulseIn(echoPin, HIGH) * 0.01723;
+  pinMode(echoPin, INPUT);
+  unsigned long duration = pulseIn(echoPin, HIGH, ULTRASONIC_TIMEOUT_US);
+  return duration * 0.01723;
 }
 
-//the straight mode functions.
+/**
+ * Straight mode navigation: detect directional obstacles ahead.
+ */
 void straightMode(double df, double dr, double dl)
 {
-// set all vibrators off 
   digitalWrite(VR_PIN, LOW);
   digitalWrite(VL_PIN, LOW);
 
-
-//checking if the front distance is lower or equal distance to the DISTANCE THRESHOLD and if the front cycle is below the cycle LIMIT
   if (df <= DISTANCE_THRESHOLD && cycleF < CYCLE_LIMIT)
   {
     digitalWrite(VR_PIN, HIGH);
@@ -175,15 +186,10 @@ void straightMode(double df, double dr, double dl)
   }
   else
   {
-//checking if the right distance is lower or equal distance to the DISTANCE THRESHOLD and if the right cycle is below the cycle LIMIT
-
     if (dr <= DISTANCE_THRESHOLD && cycleR < CYCLE_LIMIT)
     {
       digitalWrite(VR_PIN, HIGH);
     }
-
-
-//checking if the left distance is lower or equal distance to the DISTANCE THRESHOLD and if the left cycle is below the cycle LIMIT
     if (dl <= DISTANCE_THRESHOLD && cycleL < CYCLE_LIMIT)
     {
       digitalWrite(VL_PIN, HIGH);
@@ -191,44 +197,66 @@ void straightMode(double df, double dr, double dl)
   }
 }
 
-//the down-mode function.
+/**
+ * Down mode navigation: detect surface elevation (curb/step) or drop-offs (hole/stairs).
+ */
 void downMode(double df)
 {
-// set all vibrators off 
   digitalWrite(VR_PIN, LOW);
   digitalWrite(VL_PIN, LOW);
 
-//check if the front cycle is below the cycle LIMIT or not
-  if (cycleF < CYCLE_LIMIT) {
-//checking if the front distance is lower or equal to the surface level.
+  if (cycleF < CYCLE_LIMIT)
+  {
     if (df <= level)
     {
+      // Raised obstacle or step ahead -> right vibration warning
       digitalWrite(VR_PIN, HIGH);
     }
-//if it is above the surface level.
     else
     {
+      // Drop-off or hole ahead -> left vibration warning
       digitalWrite(VL_PIN, HIGH);
     }
   }
 }
 
-//calculating and assigning the correct surface level value for the user.
+/**
+ * Calibrate the ground surface level by averaging 10 front sensor readings.
+ */
 void setLevel()
 {
-//collecting ten readings from the front ultra-sonic sensor.
-  double value = 0;
+  double value = 0.0;
+  int validSamples = 0;
+
   for (int i = 0; i < 10; i++)
   {
-    value += readUltrasonicDistance(SF_TRIG, SF_TRIG);
+    double d = readUltrasonicDistance(SF_TRIG, SF_TRIG);
+    if (d > 0)
+    {
+      value += d;
+      validSamples++;
+    }
     delay(100);
   }
-//assigning to the level value the mean of the sum of all distances 
-  level = value / 10;
+
+  if (validSamples > 0)
+  {
+    level = value / validSamples;
+  }
+  else
+  {
+    level = 100.0; // Fallback baseline if calibration sensor is blocked
+  }
+
+  Serial.print(F("Calibrated Ground Level: "));
+  Serial.println(level);
 }
 
-void updateCycleCount(double df, double dr, double dl) {
-  // Update cycle counts
+/**
+ * Increment cycle counters if readings remain unchanged between consecutive loops.
+ */
+void updateCycleCount(double df, double dr, double dl)
+{
   cycleF = (preDF == df) ? cycleF + 1 : 0;
   cycleR = (preDR == dr) ? cycleR + 1 : 0;
   cycleL = (preDL == dl) ? cycleL + 1 : 0;

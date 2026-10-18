@@ -1,0 +1,56 @@
+[project]
+name = "motion-glasses"
+version = "1.0.0"
+description = "Assistive dual-mode obstacle and terrain navigation glasses using ultrasonic sensing, IMU head tracking, and haptic feedback."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Ahmad Serieh", email = "ahmadserieh.official@gmail.com" }
+]
+keywords = [
+    "assistive-technology",
+    "accessibility",
+    "arduino",
+    "ultrasonic-sensors",
+    "mpu6050",
+    "haptic-feedback",
+    "obstacle-detection",
+    "embedded-systems"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Healthcare Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+]
+dependencies = []
+
+[project.scripts]
+motion-glasses-sim = "motion_glasses.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
